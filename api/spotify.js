@@ -1,13 +1,13 @@
 import fetch from "node-fetch";
 
 export default async function handler(req, res) {
-  const refresh_token = "YOUR_REFRESH_TOKEN";
-  const client_id = "YOUR_CLIENT_ID";
-  const client_secret = "YOUR_CLIENT_SECRET";
+  const refresh_token = process.env.SPOTIFY_REFRESH_TOKEN;
+  const client_id = process.env.SPOTIFY_CLIENT_ID;
+  const client_secret = process.env.SPOTIFY_CLIENT_SECRET;
 
   const basic = Buffer.from(`${client_id}:${client_secret}`).toString("base64");
 
-  // Get new access token
+  // Request a new access token
   const tokenResponse = await fetch("https://accounts.spotify.com/api/token", {
     method: "POST",
     headers: {
@@ -23,21 +23,17 @@ export default async function handler(req, res) {
   const tokenData = await tokenResponse.json();
   const access_token = tokenData.access_token;
 
-  // Get currently playing track
+  // Request currently playing track
   const nowPlayingResponse = await fetch(
     "https://api.spotify.com/v1/me/player/currently-playing",
-    {
-      headers: {
-        Authorization: `Bearer ${access_token}`,
-      },
-    }
+    { headers: { Authorization: `Bearer ${access_token}` } }
   );
 
   if (nowPlayingResponse.status === 204 || nowPlayingResponse.status > 400) {
     res.setHeader("Content-Type", "image/svg+xml");
     res.status(200).send(`
-      <svg xmlns="http://www.w3.org/2000/svg" width="350" height="60">
-        <text x="10" y="35" font-size="18" fill="#999">Nothing playing right now 🎧</text>
+      <svg xmlns="http://www.w3.org/2000/svg" width="400" height="60">
+        <text x="10" y="35" font-size="16" fill="#999">Nothing playing right now 🎧</text>
       </svg>
     `);
     return;
