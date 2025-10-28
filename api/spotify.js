@@ -1,53 +1,105 @@
-import fetch from "node-fetch";
+// api/spotify.js
+import fetch from 'node-fetch';
 
-export default async function handler(req, res) {
-  const refresh_token = process.env.SPOTIFY_REFRESH_TOKEN;
-  const client_id = process.env.SPOTIFY_CLIENT_ID;
-  const client_secret = process.env.SPOTIFY_CLIENT_SECRET;
+const NOW_PLAYING_URL = 'https://api.spotify.com/v1/me/player/currently-playing';
+const TOKEN_URL = 'https://accounts.spotify.com/api/token';
 
-  const basic = Buffer.from(`${client_id}:${client_secret}`).toString("base64");
-
-  // Request a new access token
-  const tokenResponse = await fetch("https://accounts.spotify.com/api/token", {
-    method: "POST",
+async function refreshToken() {
+  const { SPOTIFY_CLIENT_ID, SPOTIFY_CLIENT_SECRET, SPOTIFY_REFRESH_TOKEN } = process.env;
+  const basic = Buffer.from(`${SPOTIFY_CLIENT_ID}:${SPOTIFY_CLIENT_SECRET}`).toString('base64');
+  const res = await fetch(TOKEN_URL, {
+    method: 'POST',
     headers: {
-      Authorization: `Basic ${basic}`,
-      "Content-Type": "application/x-www-form-urlencoded",
+      'Authorization': `Basic ${basic}`,
+      'Content-Type': 'application/x-www-form-urlencoded'
     },
     body: new URLSearchParams({
-      grant_type: "refresh_token",
-      refresh_token,
-    }),
+      grant_type: 'refresh_token',
+      refresh_token: SPOTIFY_REFRESH_TOKEN
+    })
   });
-
-  const tokenData = await tokenResponse.json();
-  const access_token = tokenData.access_token;
-
-  // Request currently playing track
-  const nowPlayingResponse = await fetch(
-    "https://api.spotify.com/v1/me/player/currently-playing",
-    { headers: { Authorization: `Bearer ${access_token}` } }
-  );
-
-  if (nowPlayingResponse.status === 204 || nowPlayingResponse.status > 400) {
-    res.setHeader("Content-Type", "image/svg+xml");
-    res.status(200).send(`
-      <svg xmlns="http://www.w3.org/2000/svg" width="400" height="60">
-        <text x="10" y="35" font-size="16" fill="#999">Nothing playing right now 🎧</text>
-      </svg>
-    `);
-    return;
+  const data = await res.json();
+  if (!res.ok || !data.access_token) {
+    throw new Error(`Token refresh failed: ${JSON.stringify(data)}`);
   }
+  return data.access_token;
+}
 
-  const song = await nowPlayingResponse.json();
-  const title = song.item.name;
-  const artist = song.item.artists.map(a => a.name).join(", ");
+function svgEscape(text = '') {
+  return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
 
-  res.setHeader("Content-Type", "image/svg+xml");
-  res.status(200).send(`
-    <svg xmlns="http://www.w3.org/2000/svg" width="500" height="60">
-      <text x="10" y="25" font-size="16" font-weight="bold" fill="#1DB954">${title}</text>
-      <text x="10" y="45" font-size="14" fill="#ccc">by ${artist}</text>
-    </svg>
-  `);
+function renderSVG({ title, artist, url }) {
+  const display = artist ? `${title} — ${artist}` : title;
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<svg width="760" height="90" viewBox="0 0 760 90" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Spotify Now Playing">
+  <style>
+    .card { fill: #121212; }
+    .text { font: 600 16px ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial; fill: #fff; }
+    .muted { font: 400 13px ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial; fill: #b3b3b3; }
+    .dot { fill: #1DB954; }
+    a { text-decoration: none; }
+  </style>
+  <rect class="card" x="0" y="0" width="760" height="90" rx="12" />
+  <circle class="dot" cx="26" cy="26" r="6"/>
+  <text class="text" x="46" y="32">Now Playing</text>
+  <a href="${url || '#'}" target="_blank">
+    <text class="text" x="26" y="60">${svgEscape(display)}</text>
+  </a>
+  <text class="muted" x="26" y="78">${svgEscape(url || '')}</text>
+</svg>`;
+}
+
+export default async function handler(req, res) {
+  try {
+    const forceJSON = req.query.format === 'json' || /application\/json/i.test(req.headers.accept || '');
+    const token = await refreshToken();
+
+    const r = await fetch(NOW_PLAYING_URL, {
+      headers: { Authorization: `Bearer ${token}` }
+    });
+
+    // 204 = nothing playing
+    if (r.status === 204) {
+      const payload = { isPlaying: false, title: 'Nothing playing right now' };
+      if (forceJSON) {
+        res.setHeader('Cache-Control', 'no-store');
+        return res.status(200).json(payload);
+      }
+      res.setHeader('Content-Type', 'image/svg+xml');
+      res.setHeader('Cache-Control', 'no-store');
+      return res.status(200).send(renderSVG({ title: payload.title }));
+    }
+
+    const data = await r.json();
+
+    const isPlaying = !!data?.is_playing;
+    const title = data?.item?.name || 'Unknown Title';
+    const artist = (data?.item?.artists || []).map(a => a.name).join(', ') || '';
+    const url = data?.item?.external_urls?.spotify || '';
+
+    const payload = { isPlaying, title, artist, songUrl: url };
+
+    if (forceJSON) {
+      res.setHeader('Cache-Control', 'no-store');
+      return res.status(200).json(payload);
+    }
+
+    res.setHeader('Content-Type', 'image/svg+xml');
+    res.setHeader('Cache-Control', 'no-store');
+    return res.status(200).send(renderSVG({ title, artist, url }));
+  } catch (err) {
+    const msg = (err && err.message) ? err.message : String(err);
+    const fallback = { isPlaying: false, title: 'Nothing playing right now' };
+
+    // If they asked for JSON, return JSON error shape
+    if (req.query.format === 'json' || /application\/json/i.test(req.headers.accept || '')) {
+      return res.status(200).json(fallback);
+    }
+
+    // Otherwise, SVG fallback
+    res.setHeader('Content-Type', 'image/svg+xml');
+    res.setHeader('Cache-Control', 'no-store');
+    return res.status(200).send(renderSVG({ title: fallback.title }));
+  }
 }
