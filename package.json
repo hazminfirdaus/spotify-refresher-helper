@@ -1,6 +1,7 @@
 {
   "name": "spotify-refresher-helper",
   "private": true,
+  "type": "module",
   "dependencies": {
     "node-fetch": "^2.7.0"
   }
